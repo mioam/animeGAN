@@ -4,6 +4,14 @@ from torch import nn
 from torch.nn import functional as F
 import numpy as np
 
+def weights_init_normal(m):
+    classname = m.__class__.__name__
+    if classname.find("Conv") != -1:
+        torch.nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find("BatchNorm2d") != -1:
+        torch.nn.init.normal_(m.weight.data, 1.0, 0.02)
+        torch.nn.init.constant_(m.bias.data, 0.0)
+
 class Generator(nn.Module):
     def __init__(self, latent_dim, img_dim: tuple, hidden_size=256):
         super(Generator, self).__init__()
@@ -11,30 +19,29 @@ class Generator(nn.Module):
         self.img_dim = img_dim  # (C, H, W)
         self.hidden_size = hidden_size
         # Layers
-        self.latent_fc = nn.Linear(self.latent_dim, self.hidden_size)
-        self.latent_bn = nn.BatchNorm1d(self.hidden_size)
-        self.fc1 = nn.Linear(self.hidden_size, 2 * self.hidden_size)
-        self.bn1 = nn.BatchNorm1d(2 * self.hidden_size)
-        self.fc2 = nn.Linear(2 * self.hidden_size, 4 * self.hidden_size)
-        self.bn2 = nn.BatchNorm1d(4 * self.hidden_size)
-        self.fc3 = nn.Linear(4 * self.hidden_size, int(np.prod(self.img_dim)))
+        self.init_size = img_dim[1] // 4
+        self.l1 = nn.Sequential(nn.Linear(latent_dim, 128 * self.init_size ** 2))
 
-        self._initialize(0., 0.02)
-
-    def _initialize(self, mean, std):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                m.weight.data.normal_(mean, std)
-                m.bias.data.zero_()
+        self.conv_blocks = nn.Sequential(
+            nn.BatchNorm2d(128),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 128, 3, stride=1, padding=1),
+            nn.BatchNorm2d(128, 0.8),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(128, 64, 3, stride=1, padding=1),
+            nn.BatchNorm2d(64, 0.8),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, img_dim[0], 3, stride=1, padding=1),
+            nn.Tanh(),
+        )
+        weights_init_normal(self)
 
     def forward(self, z):
-        z = F.relu(self.latent_bn(self.latent_fc(z)))
-        latent = z
-        out = F.relu(self.bn1(self.fc1(latent)))
-        out = F.relu(self.bn2(self.fc2(out)))
-        out = torch.tanh(self.fc3(out))
-        out = torch.reshape(out, (-1,) + self.img_dim)
-        return out
+        out = self.l1(z)
+        out = out.view(out.shape[0], 128, self.init_size, self.init_size)
+        img = self.conv_blocks(out)
+        return img
 
     def sample(self, z):
         with torch.no_grad():
